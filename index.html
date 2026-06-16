@@ -125,7 +125,7 @@ function makeCircleMed() {
 function makeLollipopSm() {
   return L.divIcon({
     className:'',
-    html:`<svg width="14" height="22" viewBox="0 0 14 22" xmlns="http://www.w3.org/2000/svg">
+    html:`<svg width="14" height="14" viewBox="0 0 14 14" xmlns="http://www.w3.org/2000/svg">
       <defs>
         <radialGradient id="glps" cx="35%" cy="30%" r="65%">
           <stop offset="0%" stop-color="#88bbff"/>
@@ -133,11 +133,10 @@ function makeLollipopSm() {
           <stop offset="100%" stop-color="#0033aa"/>
         </radialGradient>
       </defs>
-      <line x1="7" y1="14" x2="7" y2="22" stroke="#0044cc" stroke-width="1.8" stroke-linecap="round"/>
       <circle cx="7" cy="7" r="6.5" fill="url(#glps)"/>
       <circle cx="4.5" cy="4.5" r="2" fill="rgba(255,255,255,0.35)"/>
     </svg>`,
-    iconSize:[14,22], iconAnchor:[7,22]
+    iconSize:[14,14], iconAnchor:[7,7]
   });
 }
 
@@ -145,7 +144,7 @@ function makeLollipopSm() {
 function makeLollipopLg() {
   return L.divIcon({
     className:'',
-    html:`<svg width="20" height="32" viewBox="0 0 20 32" xmlns="http://www.w3.org/2000/svg">
+    html:`<svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
       <defs>
         <radialGradient id="glpl" cx="35%" cy="30%" r="65%">
           <stop offset="0%" stop-color="#88bbff"/>
@@ -153,11 +152,10 @@ function makeLollipopLg() {
           <stop offset="100%" stop-color="#0033aa"/>
         </radialGradient>
       </defs>
-      <line x1="10" y1="20" x2="10" y2="32" stroke="#0044cc" stroke-width="2" stroke-linecap="round"/>
       <circle cx="10" cy="10" r="9.5" fill="url(#glpl)"/>
       <circle cx="6.5" cy="6" r="3" fill="rgba(255,255,255,0.35)"/>
     </svg>`,
-    iconSize:[20,32], iconAnchor:[10,32]
+    iconSize:[20,20], iconAnchor:[10,10]
   });
 }
 
@@ -165,7 +163,7 @@ function makeLollipopLg() {
 function makeLollipopSelected() {
   return L.divIcon({
     className:'',
-    html:`<svg width="28" height="42" viewBox="0 0 28 42" xmlns="http://www.w3.org/2000/svg">
+    html:`<svg width="28" height="28" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
       <defs>
         <radialGradient id="glpsel" cx="35%" cy="30%" r="65%">
           <stop offset="0%" stop-color="#aaccff"/>
@@ -174,62 +172,89 @@ function makeLollipopSelected() {
         </radialGradient>
       </defs>
       <circle cx="14" cy="14" r="13" fill="rgba(0,102,255,0.2)"/>
-      <line x1="14" y1="26" x2="14" y2="42" stroke="#0044cc" stroke-width="2.5" stroke-linecap="round"/>
       <circle cx="14" cy="14" r="11" fill="url(#glpsel)"/>
       <circle cx="9" cy="8" r="4" fill="rgba(255,255,255,0.4)"/>
     </svg>`,
-    iconSize:[28,42], iconAnchor:[14,42]
+    iconSize:[28,28], iconAnchor:[14,14]
   });
 }
 
-// Rangos exclusivos
+// Cada escala se vuelve visible a partir de un zoom mínimo y permanece visible
+// en todos los zooms más cercanos (acumulativo, nunca exclusivo). Esto evita
+// huecos: a cualquier zoom se ven TODAS las escalas que ya "deberían" notarse.
 const SCALE_CONFIG = {
-  1: { minZoom:1,  maxZoom:13, iconFn: makeCircleSmall },
-  2: { minZoom:13, maxZoom:15, iconFn: makeCircleMed   },
-  3: { minZoom:15, maxZoom:16, iconFn: makeCircleMed   },
-  4: { minZoom:16, maxZoom:17, iconFn: makeLollipopSm  },
-  5: { minZoom:17, maxZoom:22, iconFn: makeLollipopLg  }
+  1: { minZoom:1,  iconFn: makeCircleSmall },
+  2: { minZoom:13, iconFn: makeCircleMed   },
+  3: { minZoom:14, iconFn: makeCircleMed   },
+  4: { minZoom:15, iconFn: makeLollipopLg  },
+  5: { minZoom:17, iconFn: makeLollipopLg  }
 };
 
-const byScale = {1:[],2:[],3:[],4:[],5:[]};
-PK_DATA.forEach(p => { if(byScale[p.escala]) byScale[p.escala].push(p); });
+// A partir de este zoom, todos los puntos visibles (de cualquier escala)
+// deben verse con el mismo tamaño/ícono para que no haya diferencias visuales.
+const UNIFORM_ZOOM = 15;
 
 let selectedMarker = null;
 let selectedScale = null;
 
-const layers = {};
-Object.keys(byScale).forEach(s => {
-  const cfg = SCALE_CONFIG[s];
-  const group = L.layerGroup();
-  byScale[s].forEach(p => {
-    const m = L.marker([p.lat, p.lng], { icon: cfg.iconFn() });
-    m.on('click', e => {
-      L.DomEvent.stopPropagation(e);
-      if(selectedMarker && selectedMarker !== m) {
-        selectedMarker.setIcon(SCALE_CONFIG[selectedScale].iconFn());
-      }
-      selectedMarker = m;
-      selectedScale = s;
-      m.setIcon(makeLollipopSelected());
-      showPanel(p);
-    });
-    group.addLayer(m);
+// Estado de zoom actual, consultado por cada marcador al momento de pintarse
+let currentZoom = map.getZoom();
+
+function shouldShow(scale, zoom) {
+  const cfg = SCALE_CONFIG[scale];
+  return zoom >= cfg.minZoom;
+}
+
+const allMarkers = []; // { marker, scale }
+
+PK_DATA.forEach(p => {
+  const cfg = SCALE_CONFIG[p.escala];
+  if (!cfg) return;
+  const m = L.marker([p.lat, p.lng], { icon: cfg.iconFn() });
+  m.on('click', e => {
+    L.DomEvent.stopPropagation(e);
+    if (selectedMarker && selectedMarker !== m) {
+      const prevCfg = SCALE_CONFIG[selectedScale];
+      selectedMarker.setIcon(prevCfg.iconFn());
+    }
+    selectedMarker = m;
+    selectedScale = p.escala;
+    m.setIcon(makeLollipopSelected());
+    showPanel(p);
   });
-  layers[s] = { group, cfg };
+  // Cada vez que Leaflet (re)crea el elemento DOM de este marcador
+  // (al agregarlo, al hacer zoom, al volver de fuera del viewport, etc.)
+  // aplicamos inmediatamente la visibilidad correcta para el zoom actual.
+  // Esto evita que un marcador quede "perdido" por timing de creación del DOM.
+  m.on('add', () => {
+    const el = m.getElement();
+    if (el) el.style.display = shouldShow(p.escala, currentZoom) ? '' : 'none';
+  });
+  m.addTo(map);
+  allMarkers.push({ marker: m, scale: p.escala });
 });
 
 const zoomEl = document.getElementById('zoom-indicator');
+let isUniform = currentZoom >= UNIFORM_ZOOM;
+
 function updateLayers() {
-  const z = map.getZoom();
-  zoomEl.textContent = 'Zoom: ' + z;
-  Object.keys(layers).forEach(s => {
-    const { group, cfg } = layers[s];
-    const show = z >= cfg.minZoom && z < cfg.maxZoom;
-    if(show && !map.hasLayer(group)) map.addLayer(group);
-    if(!show && map.hasLayer(group)) map.removeLayer(group);
+  currentZoom = map.getZoom();
+  zoomEl.textContent = 'Zoom: ' + currentZoom;
+  const nowUniform = currentZoom >= UNIFORM_ZOOM;
+  allMarkers.forEach(({ marker, scale }) => {
+    const el = marker.getElement();
+    const visible = shouldShow(scale, currentZoom);
+    if (el) el.style.display = visible ? '' : 'none';
+    // Si cambiamos de modo (uniforme <-> por escala), reasignar el ícono correcto.
+    if (visible && marker !== selectedMarker && nowUniform !== isUniform) {
+      marker.setIcon(nowUniform ? makeLollipopLg() : SCALE_CONFIG[scale].iconFn());
+    }
   });
+  isUniform = nowUniform;
 }
 map.on('zoomend', () => { updateLayers(); closePanel(); });
+map.on('moveend', updateLayers);
+map.whenReady(updateLayers);
 updateLayers();
 
 // Panel
